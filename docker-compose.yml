@@ -1,0 +1,131 @@
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    container_name: unifocus_postgres
+    environment:
+      POSTGRES_USER: unifocus
+      POSTGRES_PASSWORD: unifocus_dev_password
+      POSTGRES_DB: unifocus_dev
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - unifocus_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unifocus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: unifocus_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - unifocus_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Go 后端 API 服务
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: unifocus_api
+    environment:
+      APP_ENV: dev
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: unifocus
+      DB_PASSWORD: unifocus_dev_password
+      DB_NAME: unifocus_dev
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NLP_SERVICE_URL: http://nlp-service:8000
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app
+      - go_modules:/go/pkg/mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - unifocus_network
+    command: go run cmd/api/main.go
+
+  # Python NLP 服务
+  nlp-service:
+    build:
+      context: ./nlp-service
+      dockerfile: Dockerfile
+    container_name: unifocus_nlp
+    environment:
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./nlp-service:/app
+      - nlp_models:/app/models
+    networks:
+      - unifocus_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Elasticsearch（可选，阶段二引入）
+  # elasticsearch:
+  #   image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+  #   container_name: unifocus_elasticsearch
+  #   environment:
+  #     - discovery.type=single-node
+  #     - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+  #     - xpack.security.enabled=false
+  #   ports:
+  #     - "9200:9200"
+  #   volumes:
+  #     - elasticsearch_data:/usr/share/elasticsearch/data
+  #   networks:
+  #     - unifocus_network
+
+  # pgAdmin（可选，数据库管理工具）
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: unifocus_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@unifocus.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - unifocus_network
+
+networks:
+  unifocus_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  go_modules:
+  nlp_models:
+  pgadmin_data:
+  # elasticsearch_data:
